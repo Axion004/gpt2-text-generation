@@ -1,0 +1,132 @@
+"""
+gpt2_generation.py
+
+Main script for fine-tuning GPT-2 and generating text samples using HuggingFace Transformers and Datasets.
+"""
+import os
+import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments, DataCollatorForLanguageModeling
+from datasets import Dataset
+
+MODEL_NAME = "gpt2"
+GENERATED_FILE = "generated_samples.txt"
+DATASET_FILE = "sample_dataset.txt"
+
+
+def load_model_and_tokenizer(model_name=MODEL_NAME):
+    try:
+        tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+        model = GPT2LMHeadModel.from_pretrained(model_name)
+        # Set pad_token to eos_token for GPT-2
+        tokenizer.pad_token = tokenizer.eos_token
+        return model, tokenizer
+    except Exception as e:
+        print(f"Error loading model/tokenizer: {e}")
+        exit(1)
+
+
+def create_sample_dataset():
+    sample_text = [
+        "Once upon a time, there was a brave knight who fought dragons.",
+        "Artificial intelligence is transforming the world.",
+        "The quick brown fox jumps over the lazy dog.",
+        "In a distant galaxy, humans discovered new life forms.",
+        "The sun rises in the east and sets in the west.",
+        "She sells seashells by the seashore.",
+        "To be or not to be, that is the question.",
+        "A journey of a thousand miles begins with a single step.",
+        "All that glitters is not gold.",
+        "It was the best of times, it was the worst of times."
+    ]
+    with open(DATASET_FILE, "w") as f:
+        for line in sample_text:
+            f.write(line + "\n")
+    return sample_text
+
+
+def get_hf_dataset(sample_text):
+    # Create a HuggingFace Dataset from the sample text
+    return Dataset.from_dict({"text": sample_text})
+
+
+def tokenize_function(examples, tokenizer):
+    return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=64)
+
+
+def fine_tune(model, tokenizer):
+    print("Starting fine-tuning on sample dataset...")
+    sample_text = create_sample_dataset()
+    dataset = get_hf_dataset(sample_text)
+    tokenized_dataset = dataset.map(lambda x: tokenize_function(x, tokenizer), batched=True)
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
+    )
+    training_args = TrainingArguments(
+        output_dir="./gpt2-finetuned",
+        overwrite_output_dir=True,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        save_steps=10,
+        save_total_limit=2,
+        logging_steps=5,
+        prediction_loss_only=True,
+        fp16=torch.cuda.is_available(),
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        data_collator=data_collator,
+        train_dataset=tokenized_dataset,
+    )
+    trainer.train()
+    print("Fine-tuning complete.")
+    return model
+
+
+def generate_text(model, tokenizer, prompt, max_length=100):
+    try:
+        input_ids = tokenizer.encode(prompt, return_tensors="pt")
+        input_ids = input_ids.to(model.device)
+        output = model.generate(
+            input_ids,
+            max_length=max_length,
+            num_return_sequences=1,
+            no_repeat_ngram_size=2,
+            pad_token_id=tokenizer.eos_token_id
+        )
+        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        return generated_text
+    except Exception as e:
+        print(f"Error during text generation: {e}")
+        return ""
+
+
+def save_generated_text(text, file_path=GENERATED_FILE):
+    try:
+        with open(file_path, "a") as f:
+            f.write(text + "\n\n")
+        print(f"Generated text saved to {file_path}")
+    except Exception as e:
+        print(f"Error saving generated text: {e}")
+
+
+def main():
+    print("Loading GPT-2 model and tokenizer...")
+    model, tokenizer = load_model_and_tokenizer()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+
+    # Fine-tune on sample dataset
+    model = fine_tune(model, tokenizer)
+
+    while True:
+        prompt = input("Enter a prompt for text generation (or 'exit' to quit): ")
+        if prompt.lower() == "exit":
+            break
+        generated = generate_text(model, tokenizer, prompt)
+        print("\nGenerated Text:\n", generated)
+        save_generated_text(generated)
+
+if __name__ == "__main__":
+    main()
